@@ -81,7 +81,8 @@ KNOWN_FLIGHTS = [
 ]
 
 # États conversation
-STATE_ORIGIN, STATE_DEST, STATE_STOPOVER, STATE_DATE = range(4)
+STATE_ORIGIN, STATE_DEST, STATE_STOPOVER, STATE_DATE, STATE_NB_RESULTS = range(5)
+DEFAULT_NB_RESULTS = 7
 user_sessions: dict = {}
 
 # ─── HELPERS ───────────────────────────────────────────────────────────────────
@@ -164,7 +165,7 @@ def get_static_flights(origin: str, dest: str, date_str: str, stops: str) -> lis
     return results
 
 
-async def search_best(origin: str, dest: str, days: int, stops: str) -> list:
+async def search_best(origin: str, dest: str, days: int, stops: str, nb_results: int = DEFAULT_NB_RESULTS) -> list:
     today  = datetime.today()
     all_f  = []
     seen   = set()
@@ -190,11 +191,11 @@ async def search_best(origin: str, dest: str, days: int, stops: str) -> list:
 
     with_price    = sorted([f for f in all_f if f["price"] > 0], key=lambda x: x["price"])
     without_price = [f for f in all_f if f["price"] == 0]
-    return (with_price + without_price)[:5]
+    return (with_price + without_price)[:nb_results]
 
 
 def format_flight(f: dict, rank: int) -> str:
-    medals   = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+    medals   = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
     medal    = medals[rank] if rank < 5 else "▪️"
     s_label  = "✅ Direct" if f["stops"] == 0 else f"🔄 {f['stops']} escale(s)"
     dur_h, dur_m = divmod(f["duration"], 60)
@@ -279,18 +280,38 @@ async def cb_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     q = update.callback_query; await q.answer()
     uid  = q.from_user.id
     days = int(q.data)
-    s    = user_sessions[uid]
-    s["days"] = days
+    user_sessions[uid]["days"] = days
+    await q.edit_message_text(
+        f"✅ Période : *{days} jours*\n\n"
+        f"📊 *Nombre de résultats à afficher :*\n"
+        f"_(défaut : {DEFAULT_NB_RESULTS})_",
+        parse_mode="Markdown",
+        reply_markup=build_keyboard({
+            "r3":  "3️⃣  3 résultats",
+            "r5":  "5️⃣  5 résultats",
+            "r7":  f"7️⃣  7 résultats ✅ défaut",
+            "r10": "🔟 10 résultats",
+        }, cols=2)
+    )
+    return STATE_NB_RESULTS
+
+
+async def cb_nb_results(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    nb  = int(q.data.replace("r", ""))
+    s   = user_sessions[uid]
+    s["nb_results"] = nb
 
     await q.edit_message_text(
         f"🔍 *Recherche en cours…*\n\n"
         f"   {ORIGINS[s['origin']]} → {DESTINATIONS[s['destination']]}\n"
-        f"   {STOPS_LABEL[s['stops']]}  |  {days} jours\n\n"
+        f"   {STOPS_LABEL[s['stops']]}  |  {s['days']} jours  |  top {nb}\n\n"
         f"_Patientez quelques secondes…_",
         parse_mode="Markdown"
     )
 
-    flights = await search_best(s["origin"], s["destination"], days, s["stops"])
+    flights = await search_best(s["origin"], s["destination"], s["days"], s["stops"], nb)
 
     if not flights:
         await q.message.reply_text(
@@ -303,7 +324,7 @@ async def cb_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         f"✈️ *Top {len(flights)} vols les moins chers*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{ORIGINS[s['origin']]} → {DESTINATIONS[s['destination']]}\n"
-        f"{STOPS_LABEL[s['stops']]}  |  {days} jours\n"
+        f"{STOPS_LABEL[s['stops']]}  |  {s['days']} jours\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
     )
     body   = "\n".join(format_flight(f, i) for i, f in enumerate(flights))
@@ -346,10 +367,11 @@ def main():
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start), CommandHandler("search", start)],
         states={
-            STATE_ORIGIN:   [CallbackQueryHandler(cb_origin,   pattern="^(LIL|CRL|BRU|CDG|ORY|ALL)$")],
-            STATE_DEST:     [CallbackQueryHandler(cb_dest,     pattern="^(RAK|RBA|AGA|ALL)$")],
-            STATE_STOPOVER: [CallbackQueryHandler(cb_stopover, pattern="^(direct|any|stopover)$")],
-            STATE_DATE:     [CallbackQueryHandler(cb_date,     pattern="^(7|14|30|90)$")],
+            STATE_ORIGIN:     [CallbackQueryHandler(cb_origin,     pattern="^(LIL|CRL|BRU|CDG|ORY|ALL)$")],
+            STATE_DEST:       [CallbackQueryHandler(cb_dest,       pattern="^(RAK|RBA|AGA|ALL)$")],
+            STATE_STOPOVER:   [CallbackQueryHandler(cb_stopover,   pattern="^(direct|any|stopover)$")],
+            STATE_DATE:       [CallbackQueryHandler(cb_date,       pattern="^(7|14|30|90)$")],
+            STATE_NB_RESULTS: [CallbackQueryHandler(cb_nb_results, pattern="^r(3|5|7|10)$")],
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
